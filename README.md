@@ -119,6 +119,10 @@ python scripts/eval_ripple_edits.py --method ROME --n_cases 1 --subset POPULAR
 python scripts/eval_ripple_edits.py --method IKE --n_cases 1 --subset POPULAR \
     --require_criteria Logical_Generalization,Subject_Aliasing
 
+# RAG-vs-ROME conflict benchmark
+python scripts/eval_rag_conflict.py --n_cases 5
+python scripts/eval_rag_conflict.py --case_ids us_capital,france_capital
+
 python scripts/eval_mquake.py --method IKE --n_cases 25 --edit_mode all
 python scripts/eval_mquake.py --method ROME --n_cases 10 --edit_mode one
 python scripts/eval_mquake.py --method MEMIT --n_cases 10 --edit_mode all
@@ -165,6 +169,57 @@ python -m unittest discover -s tests
 
 ---
 
+## RAG-vs-ROME conflict experiment
+
+`scripts/eval_rag_conflict.py` tests what happens when an edited model and retrieved text disagree. For each hand-written case in `data/rag_conflict/handwritten.json`, the script evaluates the same query plus paraphrases before and after a ROME edit under three conditions:
+
+| Condition | Prompt context |
+|-----------|----------------|
+| `no_context` | query only |
+| `consistent_context` | retrieved document agrees with the ROME-edited answer |
+| `conflicting_context` | retrieved document states the original pre-edit answer |
+
+The first version uses provided context strings rather than a vector database, so it is lightweight and reproducible. The dataset schema is intentionally close to CounterFact-style edits: `subject`, `relation`, `edit_prompt`, `original_answer`, `edited_answer`, `query`, `paraphrase_queries`, `consistent_context`, and `conflicting_context`.
+
+Run it from the repo root after the normal EasyEdit/ROME setup:
+
+```bash
+conda activate cs263-project
+python scripts/eval_rag_conflict.py --data_path data/rag_conflict/handwritten.json --n_cases 5 --seed 42
+```
+
+Metric definitions:
+
+| Metric | Meaning |
+|--------|---------|
+| `edited_answer_rate` | post-edit fraction of generations containing the ROME-edited answer |
+| `retrieved_answer_rate` | post-edit fraction of RAG-context generations containing the retrieved answer; `no_context` is excluded |
+| `original_answer_rate` | post-edit fraction of generations containing the original answer |
+| `conflict_sensitivity` | in `conflicting_context`, fraction of post-edit generations where retrieval overrides the edit: retrieved answer appears and edited answer does not |
+| `consistency_rate` | fraction of case/condition groups whose query and paraphrases receive the same answer class |
+| `pre_*` metrics | the same measurements before applying the ROME edit |
+
+Each run writes per-case generations to `results/benchmark_details/rag_conflict_rome_<timestamp>.json`, checkpoints completed cases under `results/benchmark_partials/`, and appends one structured row to `results/runs.jsonl`:
+
+```json
+{
+  "timestamp": "2026-05-31T00:00:00.000000",
+  "method": "ROME",
+  "model": "gpt2-xl",
+  "dataset": "RAGConflict-handwritten",
+  "n_samples": 5,
+  "seed": 42,
+  "conditions": ["no_context", "consistent_context", "conflicting_context"],
+  "metrics": {"edited_answer_rate": 0.5, "conflict_sensitivity": 0.25},
+  "details_path": "results/benchmark_details/rag_conflict_rome_20260531_000000.json",
+  "partial_path": "results/benchmark_partials/rag_conflict_rome_handwritten_n5_seed42_tok16.jsonl"
+}
+```
+
+The no-GPU scoring and aggregation tests are in `tests/test_rag_conflict.py`.
+
+---
+
 ## Stack
 
 | Component | Choice |
@@ -187,6 +242,7 @@ configs/MEMIT/        # versioned YAML hparams
 configs/IKE/          # versioned YAML hparams
 data/counterfact/     # EasyEdit CounterFact dataset (10K records, in repo)
 data/mquake/          # downloaded MQuAKE-CF-3k-v2 benchmark
+data/rag_conflict/    # hand-written RAG-vs-ROME conflict cases
 data/ripple_edits/    # downloaded RippleEdits POPULAR/RANDOM/RECENT subsets
 data/stats/           # ROME/MEMIT covariance cache; stable GPT-2 XL .npz files tracked via Git LFS
 results/runs.jsonl    # structured run log (all experiments)
