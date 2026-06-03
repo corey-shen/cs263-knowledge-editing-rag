@@ -185,7 +185,13 @@ Run it from the repo root after the normal EasyEdit/ROME setup:
 
 ```bash
 conda activate cs263-project
-python scripts/eval_rag_conflict.py --data_path data/rag_conflict/handwritten.json --n_cases 5 --seed 42
+python scripts/eval_rag_conflict.py --method ROME --data_path data/rag_conflict/handwritten.json --n_cases 5 --seed 42
+```
+
+For a quick Colab/basic-result run without EasyEdit/ROME, use the prompt-edit baseline. This uses the same dataset, RAG conditions, scoring, and JSONL logging, but represents the edited fact as an in-context updated fact instead of changing model weights:
+
+```bash
+python scripts/eval_rag_conflict.py --method PROMPT --case_ids us_capital --model_name distilgpt2 --seed 42 --no_resume
 ```
 
 Metric definitions:
