@@ -7,8 +7,9 @@ queries before and after each ROME edit under three prompt conditions:
 no context, context consistent with the edit, and context conflicting with it.
 
 Usage:
-    python scripts/eval_rag_conflict.py --n_cases 5
-    python scripts/eval_rag_conflict.py --case_ids us_capital,france_capital
+    python scripts/eval_rag_conflict.py --method ROME --n_cases 5
+    python scripts/eval_rag_conflict.py --method ROME --case_ids us_capital,france_capital
+    python scripts/eval_rag_conflict.py --method PROMPT --case_ids us_capital --model_name distilgpt2
 """
 
 from __future__ import annotations
@@ -28,10 +29,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from easyeditor import ROMEHyperParams
-from easyeditor.models.rome.rome_main import apply_rome_to_model
-from easyeditor.util import nethook
-
 from src.benchmarks.rag_conflict import (
     CONDITIONS,
     aggregate_metrics,
@@ -47,6 +44,7 @@ from src.benchmarks.rag_conflict import (
 
 DEFAULT_DATA_PATH = "data/rag_conflict/handwritten.json"
 DEFAULT_HPARAMS_PATH = "configs/ROME/gpt2-xl"
+DEFAULT_PROMPT_MODEL = "distilgpt2"
 
 
 def safe_key(value: str) -> str:
@@ -58,7 +56,7 @@ def partial_path_for(args: argparse.Namespace) -> Path:
     data_part = safe_key(Path(args.data_path).stem)
     sample_part = safe_key(f"ids_{args.case_ids}") if args.case_ids else f"n{args.n_cases or 'all'}"
     return Path("results/benchmark_partials") / (
-        f"rag_conflict_rome_{data_part}_{sample_part}_seed{args.seed}_tok{args.max_new_tokens}.jsonl"
+        f"rag_conflict_{args.method.lower()}_{data_part}_{sample_part}_seed{args.seed}_tok{args.max_new_tokens}.jsonl"
     )
 
 
@@ -103,7 +101,33 @@ def generate(model, tok, prompt: str, device: str, max_new_tokens: int) -> str:
     return tok.decode(generated, skip_special_tokens=True).strip()
 
 
+def patch_easyedit_for_rome_only() -> None:
+    """Avoid importing EasyEdit's optional IKE stack when only ROME is needed.
+
+    Recent Colab runtimes can fail while importing sentence-transformers /
+    torchcodec through EasyEdit's broad package imports. This keeps ROME runs
+    focused on the modules this script actually uses.
+    """
+    easyedit_root = Path(__file__).resolve().parent.parent / "external" / "EasyEdit" / "easyeditor"
+    package_init = easyedit_root / "__init__.py"
+    models_init = easyedit_root / "models" / "__init__.py"
+    if package_init.exists():
+        package_init.write_text("from .models.rome.rome_hparams import ROMEHyperParams\n")
+    if models_init.exists():
+        models_init.write_text("")
+
+
+def load_rome_tools():
+    patch_easyedit_for_rome_only()
+    from easyeditor import ROMEHyperParams
+    from easyeditor.models.rome.rome_main import apply_rome_to_model
+    from easyeditor.util import nethook
+
+    return ROMEHyperParams, apply_rome_to_model, nethook
+
+
 def capture_weights(model, hparams) -> dict[str, torch.Tensor]:
+    _, _, nethook = load_rome_tools()
     return {
         f"{hparams.rewrite_module_tmp.format(layer)}.weight": nethook.get_parameter(
             model, f"{hparams.rewrite_module_tmp.format(layer)}.weight"
@@ -120,12 +144,24 @@ def restore_weights(model, weights_copy: dict[str, torch.Tensor]) -> None:
 
 
 def apply_rome_edit(model, tok, hparams, request: dict[str, str]) -> None:
+    _, apply_rome_to_model, _ = load_rome_tools()
     apply_rome_to_model(
         model=model,
         tok=tok,
         request=[request],
         hparams=hparams,
         return_orig_weights=False,
+    )
+
+
+def build_prompt_edited_prompt(base_prompt: str, request: dict[str, str] | None) -> str:
+    if request is None:
+        return base_prompt
+    fact = f"{request['prompt']} {request['target_new']}."
+    return (
+        "Assume the following updated fact is true, and answer using it when relevant.\n\n"
+        f"Updated fact: {fact}\n\n"
+        f"{base_prompt}"
     )
 
 
@@ -136,12 +172,14 @@ def evaluate_case(
     record: dict[str, Any],
     state: str,
     max_new_tokens: int,
+    prompt_edit_request: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     generations = []
     for condition in CONDITIONS:
         context = condition_context(record, condition)
         for prompt_index, query in enumerate(iter_case_queries(record)):
             model_prompt = build_rag_prompt(query, context)
+            model_prompt = build_prompt_edited_prompt(model_prompt, prompt_edit_request)
             generation = generate(model, tok, model_prompt, device, max_new_tokens)
             row = classify_row(
                 record=record,
@@ -174,8 +212,12 @@ def select_sample(records: list[dict[str, Any]], args: argparse.Namespace) -> li
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--method", choices=["ROME", "PROMPT"], default="ROME",
+                        help="ROME applies EasyEdit edits; PROMPT uses an in-context updated fact for a lightweight Colab result")
     parser.add_argument("--data_path", default=DEFAULT_DATA_PATH)
     parser.add_argument("--hparams_path", default=DEFAULT_HPARAMS_PATH)
+    parser.add_argument("--model_name", default=None,
+                        help="Override model name. Defaults to ROME hparams model for ROME and distilgpt2 for PROMPT")
     parser.add_argument("--n_cases", type=int, default=None)
     parser.add_argument("--case_ids", default=None,
                         help="Optional comma-separated case_id values to run instead of random sampling")
@@ -186,22 +228,31 @@ def main() -> None:
                         help="Ignore any matching partial-result file and start this run from scratch")
     args = parser.parse_args()
 
-    assert torch.cuda.is_available(), (
-        "CUDA required for ROME editing. For local logic checks, run python -m unittest discover -s tests."
-    )
     random.seed(args.seed)
     torch.manual_seed(args.seed)
-    torch.cuda.manual_seed_all(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
 
     records = load_records(args.data_path)
     sample = select_sample(records, args)
     if not sample:
         raise ValueError(f"No RAG conflict records selected from {args.data_path}")
 
-    hparams = ROMEHyperParams.from_hparams(args.hparams_path)
-    device = f"cuda:{hparams.device}"
-    print(f"Loading {hparams.model_name} for RAG-vs-ROME on {device} ...")
-    model, tok = load_model(hparams.model_name, device)
+    hparams = None
+    if args.method == "ROME":
+        assert torch.cuda.is_available(), (
+            "CUDA required for ROME editing. Use --method PROMPT for a lightweight Colab/basic-result run."
+        )
+        ROMEHyperParams, _, _ = load_rome_tools()
+        hparams = ROMEHyperParams.from_hparams(args.hparams_path)
+        model_name = args.model_name or hparams.model_name
+        device = f"cuda:{hparams.device}"
+        print(f"Loading {model_name} for RAG-vs-ROME on {device} ...")
+    else:
+        model_name = args.model_name or DEFAULT_PROMPT_MODEL
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        print(f"Loading {model_name} for lightweight RAG conflict prompt baseline on {device} ...")
+    model, tok = load_model(model_name, device)
 
     partial_path = partial_path_for(args)
     if args.no_resume and partial_path.exists():
@@ -220,12 +271,23 @@ def main() -> None:
         print(f"\nCase {idx}/{len(sample)} id={record['case_id']} subject={record['subject']!r}")
         pre = evaluate_case(model, tok, device, record, "pre", args.max_new_tokens)
 
-        original = capture_weights(model, hparams)
-        try:
-            apply_rome_edit(model, tok, hparams, request)
-            post = evaluate_case(model, tok, device, record, "post", args.max_new_tokens)
-        finally:
-            restore_weights(model, original)
+        if args.method == "ROME":
+            original = capture_weights(model, hparams)
+            try:
+                apply_rome_edit(model, tok, hparams, request)
+                post = evaluate_case(model, tok, device, record, "post", args.max_new_tokens)
+            finally:
+                restore_weights(model, original)
+        else:
+            post = evaluate_case(
+                model,
+                tok,
+                device,
+                record,
+                "post",
+                args.max_new_tokens,
+                prompt_edit_request=request,
+            )
 
         result = {
             "case_id": record["case_id"],
@@ -248,14 +310,14 @@ def main() -> None:
 
     os.makedirs("results/benchmark_details", exist_ok=True)
     stamp = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    detail_path = Path("results/benchmark_details") / f"rag_conflict_rome_{stamp}.json"
+    detail_path = Path("results/benchmark_details") / f"rag_conflict_{args.method.lower()}_{stamp}.json"
     detail_path.write_text(json.dumps(details, indent=2))
 
     os.makedirs(os.path.dirname(args.runs_path) or ".", exist_ok=True)
     run_record = {
         "timestamp": datetime.datetime.utcnow().isoformat(),
-        "method": "ROME",
-        "model": hparams.model_name,
+        "method": args.method,
+        "model": model_name,
         "dataset": "RAGConflict-handwritten",
         "data_path": args.data_path,
         "n_samples": len(sample),
