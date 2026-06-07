@@ -1,11 +1,11 @@
 --- a/easyeditor/util/nethook.py
 +++ b/easyeditor/util/nethook.py
-@@ -68,30 +68,27 @@ class Trace(contextlib.AbstractContextManager):
+@@ -68,29 +68,24 @@ class Trace(contextlib.AbstractContextManager):
          retainer = self
          self.layer = layer
          if layer is not None:
              module = get_module(module, layer)
-
+ 
 -        def retain_hook(m, inputs, output, kwargs=None):
 +        def retain_hook(m, inputs, hook_kwargs, output):
 +            # PyTorch 2.0+ with_kwargs=True signature: (module, args, kwargs, output)
@@ -38,13 +38,13 @@
                  output = invoke_with_optional_args(
                      edit_output, output=output, layer=self.layer
                  )
-@@ -104,13 +101,11 @@ class Trace(contextlib.AbstractContextManager):
+@@ -102,16 +97,14 @@ class Trace(contextlib.AbstractContextManager):
                  if retain_grad:
                      output = recursive_copy(retainer.output, clone=True, detach=False)
              if stop:
                  raise StopForward()
              return output
-
+ 
 -        # Try to use with_kwargs=True for PyTorch 2.0+ to capture kwargs like hidden_states
 -        try:
 -            # PyTorch 2.0+ supports with_kwargs parameter
@@ -55,12 +55,8 @@
 +        try:
 +            self.registered_hook = module.register_forward_hook(retain_hook, with_kwargs=True)
 +        except TypeError:
-+            # Older PyTorch: (module, args, output) — wrap to match 4-arg signature
++            # Older PyTorch: (module, args, output) - wrap to match 4-arg signature
              def legacy_hook(m, inputs, output):
 -                return retain_hook(m, inputs, output, kwargs=None)
 +                return retain_hook(m, inputs, {}, output)
              self.registered_hook = module.register_forward_hook(legacy_hook)
-
-Apply with:
-    cd external/EasyEdit
-    patch -p1 < ../../patches/0001-fix-nethook-pytorch29-with_kwargs-signature.patch

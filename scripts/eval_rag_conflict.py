@@ -20,6 +20,7 @@ import json
 import os
 import random
 import sys
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -117,6 +118,7 @@ def patch_easyedit_for_rome_only() -> None:
         models_init.write_text("")
 
 
+@lru_cache(maxsize=1)
 def load_rome_tools():
     patch_easyedit_for_rome_only()
     from easyeditor import ROMEHyperParams
@@ -137,6 +139,7 @@ def capture_weights(model, hparams) -> dict[str, torch.Tensor]:
 
 
 def restore_weights(model, weights_copy: dict[str, torch.Tensor]) -> None:
+    _, _, nethook = load_rome_tools()
     with torch.no_grad():
         for name, original in weights_copy.items():
             weight = nethook.get_parameter(model, name)
