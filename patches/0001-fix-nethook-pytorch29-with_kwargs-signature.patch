@@ -1,6 +1,6 @@
 --- a/easyeditor/util/nethook.py
 +++ b/easyeditor/util/nethook.py
-@@ -68,29 +68,24 @@ class Trace(contextlib.AbstractContextManager):
+@@ -68,31 +68,24 @@ class Trace(contextlib.AbstractContextManager):
          retainer = self
          self.layer = layer
          if layer is not None:
@@ -38,7 +38,7 @@
                  output = invoke_with_optional_args(
                      edit_output, output=output, layer=self.layer
                  )
-@@ -102,16 +97,14 @@ class Trace(contextlib.AbstractContextManager):
+@@ -102,15 +97,14 @@ class Trace(contextlib.AbstractContextManager):
                  if retain_grad:
                      output = recursive_copy(retainer.output, clone=True, detach=False)
              if stop:
