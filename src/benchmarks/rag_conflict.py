@@ -41,10 +41,61 @@ def validate_record(record: dict[str, Any], idx: int | None = None) -> None:
         raise ValueError(f"record {idx}: paraphrase_queries must be a list")
 
 
+def align_subject_to_prompt(prompt: str, subject: str) -> str:
+    if subject in prompt:
+        return subject
+
+    prompt_lower = prompt.lower()
+    subject_lower = subject.lower()
+    start = prompt_lower.find(subject_lower)
+    if start >= 0:
+        return prompt[start:start + len(subject)]
+
+    inferred = infer_prompt_subject(prompt)
+    if inferred:
+        return inferred
+    return subject
+
+
+def infer_prompt_subject(prompt: str) -> str | None:
+    prompt = prompt.strip()
+    suffixes = (
+        " was co-founded by",
+        " was founded by",
+        " was invented by",
+        " was created by",
+        " was written by",
+        " was painted by",
+        " was proposed by",
+        " was formulated by",
+        " was born in",
+        " originated in",
+        " produces",
+        " is traditionally attributed to",
+        " is traditionally associated with",
+        " is located in",
+        " is played on",
+        " is the",
+        " is a",
+        " is",
+        " are held every",
+        " are",
+        " ended in",
+        " occurred in",
+        " fell in",
+        " has the structure of a",
+    )
+    for suffix in suffixes:
+        if prompt.endswith(suffix):
+            return prompt[: -len(suffix)].strip()
+    return None
+
+
 def case_to_request(record: dict[str, Any]) -> dict[str, str]:
+    prompt = record["edit_prompt"]
     return {
-        "prompt": record["edit_prompt"],
-        "subject": record["subject"],
+        "prompt": prompt,
+        "subject": align_subject_to_prompt(prompt, record["subject"]),
         "target_new": record["edited_answer"],
         "ground_truth": record["original_answer"],
     }

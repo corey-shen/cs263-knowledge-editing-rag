@@ -21,6 +21,32 @@ def sample_record():
 
 
 class RagConflictScoringTests(unittest.TestCase):
+    def test_case_to_request_aligns_subject_case_for_rome(self):
+        record = sample_record() | {
+            "subject": "basketball",
+            "edit_prompt": "Basketball was invented by",
+            "original_answer": "James Naismith",
+            "edited_answer": "Abner Doubleday",
+        }
+
+        request = rag_conflict.case_to_request(record)
+
+        self.assertEqual(request["subject"], "Basketball")
+        self.assertIn(request["subject"], request["prompt"])
+
+    def test_case_to_request_infers_prompt_subject_when_record_subject_is_answer_like(self):
+        record = sample_record() | {
+            "subject": "Mount Everest",
+            "edit_prompt": "The highest mountain in the world is",
+            "original_answer": "Mount Everest",
+            "edited_answer": "K2",
+        }
+
+        request = rag_conflict.case_to_request(record)
+
+        self.assertEqual(request["subject"], "The highest mountain in the world")
+        self.assertIn(request["subject"], request["prompt"])
+
     def test_classify_conflicting_context_retrieved_original_answer(self):
         record = sample_record()
         retrieved, aliases = rag_conflict.retrieved_answer_for_condition(record, "conflicting_context")
