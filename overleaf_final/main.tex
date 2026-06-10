@@ -23,7 +23,7 @@
 \maketitle
 
 \begin{abstract}
-Knowledge editing methods are often evaluated by whether they make a model produce a new target fact on a rewrite prompt. We test whether such edits also preserve unrelated behavior and propagate through related facts. We compare ROME, MEMIT, and IKE on GPT-2 XL using CounterFact, MQuAKE, RippleEdits, and a custom 225-probe diagnostic set. Our evaluation separates specificity, the preservation of unrelated behavior, from logical consistency, the propagation of an edit through related prompts, inverse relations, compositions, and multi-hop questions. In a cleaner CounterFact paraphrase setup, ROME gives the best tradeoff between rewrite accuracy and locality, MEMIT preserves locality best but underperforms on single-edit efficacy, and IKE achieves near-perfect direct in-context edit success with severe locality degradation. Across external benchmarks and custom probes, direct factual recall improves more reliably than inverse, multi-hop, or ripple consistency. The results show that high rewrite accuracy does not imply that an edited model has coherently updated its related beliefs.
+Knowledge editing methods are often evaluated by whether they make a model produce a new target fact on a rewrite prompt. We test whether such edits also preserve unrelated behavior and propagate through related facts. We compare ROME, MEMIT, and IKE on GPT-2 XL using CounterFact, MQuAKE, RippleEdits, and a custom 225-probe diagnostic set. Our evaluation separates specificity, the preservation of unrelated behavior, from logical consistency, the propagation of an edit through related prompts, inverse relations, compositions, and multi-hop questions. We also add a retrieval-augmented conflict test that asks whether a ROME-edited model follows its edited weights or a contradictory retrieved document. In a cleaner CounterFact paraphrase setup, ROME gives the best tradeoff between rewrite accuracy and locality, MEMIT preserves locality best but underperforms on single-edit efficacy, and IKE achieves near-perfect direct in-context edit success with severe locality degradation. Across external benchmarks, custom probes, and RAG-conflict trials, direct factual recall improves more reliably than inverse, multi-hop, ripple, or retrieval-conflict consistency. The results show that high rewrite accuracy does not imply that an edited model has coherently updated its related beliefs.
 \end{abstract}
 
 \section{Introduction}
@@ -34,7 +34,7 @@ We study the gap between direct edit success and broader consistency. For exampl
 
 We evaluate three knowledge editing paradigms on GPT-2 XL. ROME and MEMIT are parameter-editing methods that modify model weights. IKE is a retrieval and in-context method that conditions the model with edit examples at inference time rather than storing edits in weights. We compare them on CounterFact, MQuAKE, RippleEdits, and a custom diagnostic probe set designed to expose logical consistency failures.
 
-This work makes three contributions. First, we give a controlled GPT-2 XL comparison of ROME, MEMIT, and IKE on a cleaner CounterFact-original n=300 setup. Second, we introduce a 225-probe diagnostic suite for logical negation, inverse transfer, compositionality, contradiction handling, and short reasoning chains. The probe topics span people, organizations, locations, languages, professions, products, and cultural artifacts. Third, we connect the aggregate metrics to qualitative IKE locality failures with decoded generations. The main result is consistent across these views: methods can recall edited facts, but reliable inverse, multi-hop, and ripple propagation remains limited.
+This work makes four contributions. First, we give a controlled GPT-2 XL comparison of ROME, MEMIT, and IKE on a cleaner CounterFact-original n=300 setup. Second, we introduce a 225-probe diagnostic suite for logical negation, inverse transfer, compositionality, contradiction handling, and short reasoning chains. The probe topics span people, organizations, locations, languages, professions, products, and cultural artifacts. Third, we add a lightweight RAG-conflict benchmark that places ROME-edited knowledge in tension with retrieved context. Fourth, we connect the aggregate metrics to qualitative IKE locality failures with decoded generations. The main result is consistent across these views: methods can recall edited facts, but reliable inverse, multi-hop, ripple, and retrieval-conflict behavior remains limited.
 
 \section{Related Work}
 
@@ -49,6 +49,11 @@ All experiments use GPT-2 XL. ROME and MEMIT are run through EasyEdit as paramet
 
 \paragraph{Datasets.}
 CounterFact-original provides the main direct-edit comparison. We use this name for a converted CounterFact file that keeps the original ROME paraphrase prompts instead of the noisier EasyEdit paraphrase fields. The final CounterFact table uses 300 sampled records with seed 42. MQuAKE-CF-3k-v2 and RippleEdits POPULAR provide external checks for multi-hop and ripple behavior. MQuAKE is evaluated at n=100 for each method: ROME uses one-edit mode, while MEMIT and IKE use all-edits-per-case mode. RippleEdits POPULAR is also evaluated at n=100 and includes relation specificity, logical generalization, subject aliasing, compositionality I/II, and forgetfulness.
+
+\paragraph{RAG-conflict evaluation.}
+We add a small retrieval-augmented stress test to ask what happens when edited parametric knowledge and retrieved evidence disagree. The dataset contains 50 hand-written factual edits across geography, science, sports, literature, technology, and culture. Each record specifies a subject, relation, original answer, edited answer, one query, two paraphrase queries, a context string that agrees with the edit, and a context string that states the original fact. This is not a vector-database system: retrieval is controlled by directly supplying the intended context string. That design isolates the source-conflict question from retriever errors and makes the benchmark reproducible.
+
+For each case, we compare pre-edit and post-edit behavior under three conditions: no retrieved context, consistent context, and conflicting context. The post-edit ROME condition edits the model, evaluates all prompts, and then restores the original weights before the next case. We classify each generation as \texttt{edited}, \texttt{retrieved}, \texttt{original}, \texttt{inconsistent}, or \texttt{other}. The main rates are edited answer rate, retrieved answer rate, original answer rate, and \emph{conflict sensitivity}, defined as the fraction of post-edit conflicting-context generations that follow the retrieved/original answer instead of the edited answer.
 
 \paragraph{Diagnostic probes.}
 We add a 225-probe diagnostic set covering 15 edit topics. Each topic contributes three probes in each of five categories: logical negation, symmetric inverse, compositional, contradiction, and chain-of-thought. Each probe is labeled as \texttt{implicit\_edit}, \texttt{target\_conditioned}, or \texttt{supplied\_fact\_reasoning}. This distinction separates strong transfer tests from prompts that mention the new target or explicitly provide the edited fact.
@@ -144,6 +149,33 @@ IKE & 0.353 & +0.281 & 0.214 & 0.232 & 0.796 & 0.169 & 0.803 \\
 \label{tab:ripple}
 \end{table}
 
+\subsection{RAG Conflict}
+
+The RAG-conflict experiment tests a deployment-style failure mode that the previous benchmarks do not isolate. Standard knowledge-editing evaluations ask whether the edited model can recall the new fact when queried directly. Real systems, however, often wrap the model in retrieval-augmented generation: before answering, the system retrieves documents and inserts them into the prompt. This creates a new question for knowledge editing. If ROME successfully changes a fact in the weights, but retrieved evidence still states the old fact, which source controls the answer?
+
+We isolate this conflict with a controlled RAG setup. Instead of using a vector database, each benchmark record contains hand-written context strings: one that agrees with the edited fact and one that contradicts it by stating the original fact. This lets us test the interaction between edited parametric knowledge and external evidence without confounding the result with retrieval failures. Table~\ref{tab:ragconflict} summarizes the 50-case run. Each case is evaluated with one query and two paraphrases, giving 150 generations per condition.
+
+\begin{table}[!htbp]
+\centering
+\small
+\begin{tabular*}{\columnwidth}{@{\extracolsep{\fill}}lrrr@{}}
+\toprule
+Setting & Edited & Retrieved & Original \\
+\midrule
+Pre, no context & 0.093 & -- & 0.753 \\
+Post, no context & 0.707 & -- & 0.120 \\
+Post, consistent & 0.840 & 0.840 & 0.020 \\
+Post, conflicting & 0.393 & 0.453 & 0.453 \\
+\bottomrule
+\end{tabular*}
+\caption{RAG-conflict results on 50 hand-written examples. Retrieved is undefined for no-context rows. In the conflicting condition, the retrieved answer is the original pre-edit answer.}
+\label{tab:ragconflict}
+\end{table}
+
+The results show three effects. First, ROME works in isolation: without retrieved context, the edited answer rate rises from 0.093 before editing to 0.707 after editing, while the original answer rate falls from 0.753 to 0.120. This confirms that the ROME edit changed the model's behavior on the direct query distribution. Second, consistent retrieval amplifies the edit. When the supplied context agrees with the edited answer, the edited/retrieved answer rate reaches 0.840. In this condition, the internal edit and the external document point in the same direction, so the model is more reliable than with the edited weights alone.
+
+The conflicting condition is the critical test. When the retrieved context states the original fact, the post-edit edited answer rate falls to 0.393, while retrieved/original answers rise to 0.453. The resulting conflict sensitivity is 0.433, meaning that contradictory retrieved evidence overrides the ROME edit in a large minority of generations. This does not mean the edit failed: the no-context condition shows that it succeeded. Instead, the result shows that successful weight edits are not always the dominant source of truth once retrieval-augmented context is introduced. In practical terms, a RAG system using an edited model may still reproduce stale retrieved facts unless the retrieval corpus, prompting strategy, or answer policy is updated alongside the model edit.
+
 \section{Qualitative Analysis}
 
 The IKE CounterFact results show a sharp tradeoff: in-context examples make the target edit easy to produce, but they perturb unrelated locality prompts. We audited stable failures where locality passed before editing and failed after editing for all three IKE settings, $k=4$, $k=8$, and $k=16$. Table~\ref{tab:ikequal} shows representative cases using the $k=8$ post-context token.
@@ -174,15 +206,17 @@ The custom probes expose a complementary failure. For Sanofi headquarters edited
 
 The results support three method-level conclusions. First, ROME has the best tradeoff between rewrite accuracy and locality in this GPT-2 XL CounterFact setup. Second, MEMIT preserves locality but underperforms on single-edit efficacy in our GPT-2 XL/EasyEdit setup; this should not be overgeneralized to its intended mass-edit setting. Third, IKE is a strong inference-time baseline for prompted edited facts, but it is not a persistent model edit and can substantially perturb unrelated prompts.
 
+The RAG-conflict results add a deployment-oriented version of the same lesson. Editing the weights changes the model's internal tendency, but retrieval can still steer the final answer. This matters because practical systems often combine parametric memory with external documents. If those sources disagree, an edited model may not reliably privilege the edited fact unless the prompting or retrieval policy explicitly resolves the conflict.
+
 More broadly, the experiments show why knowledge editing evaluations should separate specificity from consistency. CounterFact locality asks whether unrelated predictions remain stable. MQuAKE, RippleEdits, and our probes ask whether related consequences update. A method can satisfy one criterion and fail the other. Rewrite accuracy is necessary, but it is not sufficient.
 
 \section{Limitations}
 
-This is a limited-scale evaluation. All experiments use GPT-2 XL, so the numbers should not be treated as paper-exact replications for larger models. The MQuAKE and RippleEdits runs use n=100 samples, short greedy generations, and answer-alias containment scoring. ROME is evaluated in one-edit mode for MQuAKE, while MEMIT and IKE are evaluated in all-edits-per-case mode. The 225 probes are manually designed diagnostics rather than a community-standard benchmark. Finally, the IKE locality audit examples are selected stable failures, not a random sample.
+This is a limited-scale evaluation. All experiments use GPT-2 XL, so the numbers should not be treated as paper-exact replications for larger models. The MQuAKE and RippleEdits runs use n=100 samples, short greedy generations, and answer-alias containment scoring. ROME is evaluated in one-edit mode for MQuAKE, while MEMIT and IKE are evaluated in all-edits-per-case mode. The 225 probes and 50 RAG-conflict cases are manually designed diagnostics rather than community-standard benchmarks. The RAG setting uses controlled context strings instead of a learned retriever or vector database, so it isolates source conflict but does not measure real retrieval quality. Finally, the IKE locality audit examples are selected stable failures, not a random sample.
 
 \section{Conclusion}
 
-Direct rewrite accuracy can hide important editing failures. ROME, MEMIT, and IKE all improve some direct or local forms of edited-fact behavior, but none reliably provides broad logical consistency. The main implication is not that one method solves knowledge editing, but that evaluation must distinguish direct recall, locality preservation, and logical/ripple propagation.
+Direct rewrite accuracy can hide important editing failures. ROME, MEMIT, and IKE all improve some direct or local forms of edited-fact behavior, but none reliably provides broad logical consistency. The RAG-conflict experiment further shows that even successful ROME edits can be weakened by contradictory retrieved evidence. The main implication is not that one method solves knowledge editing, but that evaluation must distinguish direct recall, locality preservation, logical/ripple propagation, and behavior under retrieval conflict.
 
 \begin{thebibliography}{9}
 
