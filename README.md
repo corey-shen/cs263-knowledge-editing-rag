@@ -2,7 +2,7 @@
 
 *Beyond Rewrite Accuracy: Testing Logical Consistency in Knowledge Editing*
 
-Compares ROME, MEMIT, and IKE on GPT-2 XL using CounterFact, RippleEdits, and MQuAKE, with a custom diagnostic probe set targeting logical consistency and ripple effects.
+Compares ROME, MEMIT, and IKE on GPT-2 XL using CounterFact, RippleEdits, and MQuAKE, with a custom diagnostic probe set targeting logical consistency and ripple effects. The repo also includes a RAG-vs-ROME conflict benchmark for testing whether a ROME-edited model follows edited weights or retrieved external context when the two disagree.
 
 **Team**: Matthew Hutchinson, Corey Shen, Nathan Wei
 
@@ -122,6 +122,7 @@ python scripts/eval_ripple_edits.py --method IKE --n_cases 1 --subset POPULAR \
 # RAG-vs-ROME conflict benchmark
 python scripts/eval_rag_conflict.py --n_cases 5
 python scripts/eval_rag_conflict.py --case_ids us_capital,france_capital
+python scripts/eval_rag_conflict.py --method ROME --n_cases 50 --seed 42 --no_resume
 
 python scripts/eval_mquake.py --method IKE --n_cases 25 --edit_mode all
 python scripts/eval_mquake.py --method ROME --n_cases 10 --edit_mode one
@@ -171,7 +172,9 @@ python -m unittest discover -s tests
 
 ## RAG-vs-ROME conflict experiment
 
-`scripts/eval_rag_conflict.py` tests what happens when an edited model and retrieved text disagree. For each hand-written case in `data/rag_conflict/handwritten.json`, the script evaluates the same query plus paraphrases before and after a ROME edit under three conditions:
+`scripts/eval_rag_conflict.py` tests what happens when an edited model and retrieved text disagree. This matters because knowledge-editing benchmarks usually query the edited model directly, while real systems often put a retriever in front of the model. If the weights say the edited fact but the retrieved document says the original fact, the model has two competing sources of truth.
+
+For each hand-written case in `data/rag_conflict/handwritten.json`, the script evaluates the same query plus paraphrases before and after a ROME edit under three conditions:
 
 | Condition | Prompt context |
 |-----------|----------------|
@@ -179,13 +182,19 @@ python -m unittest discover -s tests
 | `consistent_context` | retrieved document agrees with the ROME-edited answer |
 | `conflicting_context` | retrieved document states the original pre-edit answer |
 
-The first version uses provided context strings rather than a vector database, so it is lightweight and reproducible. The dataset schema is intentionally close to CounterFact-style edits: `subject`, `relation`, `edit_prompt`, `original_answer`, `edited_answer`, `query`, `paraphrase_queries`, `consistent_context`, and `conflicting_context`.
+The first version uses provided context strings rather than a vector database, so it is lightweight and reproducible. This is controlled prompt-based retrieval: the benchmark chooses which document is "retrieved" for each condition. That isolates the conflict between edited weights and external evidence without adding noise from embedding search, chunking, or retriever failures. The dataset schema is intentionally close to CounterFact-style edits: `subject`, `relation`, `edit_prompt`, `original_answer`, `edited_answer`, `query`, `paraphrase_queries`, `consistent_context`, and `conflicting_context`.
 
-Run it from the repo root after the normal EasyEdit/ROME setup:
+Run the real ROME version from the repo root after the normal EasyEdit/ROME setup. This mode applies an actual ROME weight edit, evaluates the case, then restores the original weights before moving to the next case:
 
 ```bash
 conda activate cs263-project
 python scripts/eval_rag_conflict.py --method ROME --data_path data/rag_conflict/handwritten.json --n_cases 5 --seed 42
+```
+
+The reported 50-case run used:
+
+```bash
+python scripts/eval_rag_conflict.py --method ROME --n_cases 50 --seed 42 --max_new_tokens 8 --no_resume
 ```
 
 For a quick Colab/basic-result run without EasyEdit/ROME, use the prompt-edit baseline. This uses the same dataset, RAG conditions, scoring, and JSONL logging, but represents the edited fact as an in-context updated fact instead of changing model weights:
@@ -204,6 +213,31 @@ Metric definitions:
 | `conflict_sensitivity` | in `conflicting_context`, fraction of post-edit generations where retrieval overrides the edit: retrieved answer appears and edited answer does not |
 | `consistency_rate` | fraction of case/condition groups whose query and paraphrases receive the same answer class |
 | `pre_*` metrics | the same measurements before applying the ROME edit |
+
+### Reported RAG-conflict result
+
+The 50-case ROME run evaluates 50 hand-written examples with one query and two paraphrases each, so each condition has 150 generations. The main result is that ROME works when queried directly, but conflicting retrieved context can still pull the model back toward the original fact.
+
+| State / condition | Edited answer rate | Retrieved answer rate | Original answer rate | Consistency rate |
+|-------------------|-------------------:|----------------------:|---------------------:|-----------------:|
+| Pre, no context | 0.0933 | — | 0.7533 | 0.8000 |
+| Pre, consistent context | 0.7867 | 0.7867 | 0.1667 | 0.8200 |
+| Pre, conflicting context | 0.0200 | 0.9467 | 0.9467 | 0.9000 |
+| Post, no context | 0.7067 | — | 0.1200 | 0.7200 |
+| Post, consistent context | 0.8400 | 0.8400 | 0.0200 | 1.0000 |
+| Post, conflicting context | 0.3933 | 0.4533 | 0.4533 | 0.6400 |
+
+Top-level summary:
+
+| Metric | Value | Interpretation |
+|--------|------:|----------------|
+| `edited_answer_rate` | 0.6467 | Across post-edit conditions, the model often gives the edited answer. |
+| `retrieved_answer_rate` | 0.6467 | When context is present, generations often match the retrieved answer. |
+| `original_answer_rate` | 0.1978 | Original answers are reduced overall after editing, but not eliminated. |
+| `conflict_sensitivity` | 0.4333 | In conflicting RAG, retrieval overrides the ROME edit in a large minority of generations. |
+| `consistency_rate` | 0.7867 | Query/paraphrase answer classes are usually, but not always, stable. |
+
+Takeaway: the ROME edit succeeds in isolation (`post/no_context` edited rate = 0.7067), and consistent retrieval reinforces it (`post/consistent_context` edited/retrieved rate = 0.8400). But when retrieval states the old fact, edited answers fall to 0.3933 and retrieved/original answers rise to 0.4533. A successful weight edit is therefore not automatically the dominant source of truth in a RAG-style prompt.
 
 Each run writes per-case generations to `results/benchmark_details/rag_conflict_rome_<timestamp>.json`, checkpoints completed cases under `results/benchmark_partials/`, and appends one structured row to `results/runs.jsonl`:
 
@@ -235,7 +269,7 @@ The no-GPU scoring and aggregation tests are in `tests/test_rag_conflict.py`.
 | Model | GPT-2 XL (1.5B); GPT-J (6B) optional |
 | Benchmarks | CounterFact, RippleEdits, MQuAKE |
 | Compute | GCP T4; prefer non-preemptible/on-demand for long MEMIT cache or probe runs |
-| Novel eval | 225 diagnostic probes: 15 edit topics x 5 balanced categories x 3 probes |
+| Novel evals | 225 diagnostic probes: 15 edit topics x 5 balanced categories x 3 probes; 50-case RAG-vs-ROME conflict benchmark |
 
 ---
 
